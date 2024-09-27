@@ -1,0 +1,3 @@
+https://example.com/dashboard
+https://another-domain.com/profile
+https://example.com/settings
