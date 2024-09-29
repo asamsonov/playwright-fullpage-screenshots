@@ -1,5 +1,6 @@
-import { chromium, BrowserContext } from 'playwright';
+import { chromium, BrowserContext, Page } from 'playwright';
 import fs from 'fs';
+import path from 'path';
 import { manualLoginAndSaveCookies } from './login';
 
 // Function to load cookies from file
@@ -14,8 +15,7 @@ async function loadCookiesForDomain(context: BrowserContext, domain: string, coo
 }
 
 // Function to take screenshot of a URL
-async function takeScreenshot(url: string, browser: any, outputDir: string) {
-  const page = await browser.newPage();
+async function takeScreenshot(page: Page, url: string, outputDir: string) {
   try {
     await page.goto(url);
     const filename = url.replace(/https?:\/\//, '').replace(/\//g, '_') + '.png';
@@ -29,10 +29,64 @@ async function takeScreenshot(url: string, browser: any, outputDir: string) {
   }
 }
 
+// Function to handle downloading files (like PDFs)
+async function downloadFile(page: Page, url: string, downloadDir: string) {
+  // Ensure the download directory exists
+  if (!fs.existsSync(downloadDir)) {
+    fs.mkdirSync(downloadDir, { recursive: true });
+  }
+
+  // Listen for download event
+  const [download] = await Promise.all([
+    page.waitForEvent('download'),  // Wait for the download to start
+    page.goto(url)                  // Trigger the download by navigating to the URL
+  ]);
+
+  const suggestedFilename = download.suggestedFilename();
+  const filePath = path.join(downloadDir, suggestedFilename);
+  await download.saveAs(filePath);  // Save the file
+  console.log(`Downloaded: ${suggestedFilename} to ${filePath}`);
+}
+
+// Function to detect if the URL points to a PDF by inspecting headers
+async function isPdfUrl(url: string, page: Page): Promise<boolean> {
+  try {
+    const response = await page.request.head(url);  // Send a HEAD request
+    const contentType = response.headers()['content-type'];
+
+    // Check if content-type indicates a PDF file
+    if (contentType && contentType.includes('application/pdf')) {
+      console.log(`Detected PDF file at: ${url}`);
+      return true;
+    }
+  } catch (error) {
+    console.error(`Failed to check content type for ${url}: ${error}`);
+  }
+
+  return false;
+}
+
+async function handleUrl(url: string, context: BrowserContext, outputDir: string) {
+  const page = await context.newPage();
+
+  // Use HEAD request to check if the URL points to a PDF
+  const isPdf = await isPdfUrl(url, page);
+
+  if (isPdf) {
+    // Handle PDF download and save it to the output directory (same as for screenshots)
+    await downloadFile(page, url, outputDir);
+  } else {
+    // If it's not a PDF, take a screenshot and save it to the same output directory
+    await takeScreenshot(page, url, outputDir)
+  }
+
+  await page.close();
+}
+
 // Main function to process the list of URLs
 async function processUrls(file: string, outputDir: string, cookieFile: string, domainsRequiringLogin: string[]) {
   if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir);
+    fs.mkdirSync(outputDir, { recursive: true });
   }
 
   const urls = fs.readFileSync(file, 'utf-8').split('\n').map(url => url.trim()).filter(url => url);
@@ -54,7 +108,8 @@ async function processUrls(file: string, outputDir: string, cookieFile: string, 
       }
     }
 
-    await takeScreenshot(url, browser, outputDir);
+    // Handle URL (either screenshot or PDF download) in the same output directory
+    await handleUrl(url, context, outputDir);
   }
 
   await browser.close();
@@ -68,5 +123,5 @@ const domainsRequiringLogin = [
 
 // Run the process
 processUrls('urls.txt', 'screenshots', 'cookies.json', domainsRequiringLogin)
-  .then(() => console.log('Screenshots completed!'))
-  .catch(err => console.error(`Error during screenshot process: ${err}`));
+  .then(() => console.log('Process completed!'))
+  .catch(err => console.error(`Error during process: ${err}`));
